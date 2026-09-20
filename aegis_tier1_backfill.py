@@ -14,7 +14,6 @@ def main():
     client = bigquery.Client(credentials=credentials, project=creds_dict['project_id'])
     table_id = f"{creds_dict['project_id']}.telemetry_bronze.aegis_procurement"
 
-    # 1. Fetch candidate primes across key spending sectors
     query = f"""
         SELECT DISTINCT ticker, company_name 
         FROM `{creds_dict['project_id']}.telemetry_bronze.tier1_master_index`
@@ -33,16 +32,10 @@ def main():
     end_date = datetime.utcnow().strftime('%Y-%m-%d')
     timestamp_iso = datetime.utcnow().isoformat()
 
-    # CRITICAL: Allow BigQuery to dynamically add missing columns
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-        schema_update_options=[
-            bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
-            bigquery.SchemaUpdateOption.ALLOW_FIELD_RELAXATION
-        ],
-        ignore_unknown_values=True,
-        autodetect=True
+        ignore_unknown_values=True
     )
 
     all_awards = []
@@ -63,8 +56,7 @@ def main():
                     "recipient_search_text": [company_clean]
                 },
                 "fields": [
-                    "Award ID", "Recipient Name", "Award Amount", 
-                    "Description", "Start Date", "Awarding Agency"
+                    "Award ID", "Award Amount", "Start Date", "Awarding Agency"
                 ],
                 "limit": 100,
                 "page": page,
@@ -85,7 +77,7 @@ def main():
                             "timestamp": timestamp_iso,
                             "domain": "AEGIS",
                             "entity_id": ticker,
-                            "recipient_name": str(award.get("Recipient Name", "UNKNOWN")),
+                            # recipient_name REMOVED to match BigQuery schema
                             "award_amount": float(award.get("Award Amount") or 0.0),
                             "awarding_agency": str(award.get("Awarding Agency", "UNKNOWN")),
                             "date_signed": str(award.get("Start Date", "")),
@@ -94,9 +86,13 @@ def main():
                         })
 
                     if len(all_awards) >= 2500:
-                        client.load_table_from_json(all_awards, table_id, job_config=job_config).result()
-                        print(f"[AEGIS] Successfully loaded batch of {len(all_awards)} rows.")
-                        all_awards = []
+                        try:
+                            client.load_table_from_json(all_awards, table_id, job_config=job_config).result()
+                            print(f"[AEGIS] Successfully loaded batch of {len(all_awards)} rows.")
+                            all_awards = []
+                        except Exception as bq_err:
+                            print(f"[AEGIS BIGQUERY ERROR] Failed to load batch: {bq_err}")
+                            all_awards = [] # Clear to prevent infinite failure loops
 
                     if data.get("page_metadata", {}).get("hasNext", False):
                         page += 1
@@ -108,15 +104,18 @@ def main():
                 else:
                     break
             except Exception as e:
-                print(f"[AEGIS] Skipping chunk for {ticker}: {e}")
+                print(f"[AEGIS API ERROR] Skipping chunk for {ticker}: {e}")
                 break
 
     if all_awards:
-        client.load_table_from_json(all_awards, table_id, job_config=job_config).result()
-        print(f"[AEGIS] Loaded final {len(all_awards)} rows.")
+        try:
+            client.load_table_from_json(all_awards, table_id, job_config=job_config).result()
+            print(f"[AEGIS] Loaded final {len(all_awards)} rows.")
+        except Exception as e:
+            print(f"[AEGIS BIGQUERY ERROR] Failed to load final batch: {e}")
 
     print("[AEGIS] 10-Year Backfill complete.")
 
 if __name__ == "__main__":
     main()
-    
+            
