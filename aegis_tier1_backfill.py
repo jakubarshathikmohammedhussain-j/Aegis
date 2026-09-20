@@ -36,7 +36,8 @@ def main():
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-        ignore_unknown_values=True
+        ignore_unknown_values=True,
+        autodetect=True
     )
 
     all_awards = []
@@ -61,11 +62,11 @@ def main():
                 },
                 "fields": [
                     "Award ID", "Recipient Name", "Award Amount", 
-                    "Description", "Action Date", "Awarding Agency"
+                    "Description", "Start Date", "Awarding Agency" # Fixed: USASpending uses "Start Date"
                 ],
                 "limit": 100,
                 "page": page,
-                "sort": "Action Date",
+                "sort": "Start Date",
                 "order": "desc"
             }
 
@@ -86,7 +87,7 @@ def main():
                             "recipient_name": str(award.get("Recipient Name", "UNKNOWN")),
                             "award_amount": float(award.get("Award Amount") or 0.0),
                             "awarding_agency": str(award.get("Awarding Agency", "UNKNOWN")),
-                            "action_date": str(award.get("Action Date", "")),
+                            "date_signed": str(award.get("Start Date", "")), # Fixed: Matches BigQuery Schema
                             "award_id": str(award.get("Award ID", "UNKNOWN")),
                             "signal_type": "FEDERAL_CONTRACT_AWARD"
                         })
@@ -102,11 +103,14 @@ def main():
                         time.sleep(0.5)
                     else:
                         has_more = False
+                elif resp.status_code == 429:
+                    print(f"[AEGIS RATE LIMIT] Sleeping 5s for {ticker}...")
+                    time.sleep(5)
                 else:
                     print(f"[AEGIS ERROR] HTTP {resp.status_code} for {ticker}")
                     break
             except Exception as e:
-                print(f"[AEGIS ERROR] Request failed for {ticker}: {e}")
+                print(f"[AEGIS ERROR] Request/BQ load failed for {ticker}: {e}")
                 break
                 
     if all_awards:
