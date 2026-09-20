@@ -1,0 +1,22 @@
+name: AEGIS Tier 1 10-Year Backfill
+
+on:
+  workflow_dispatch:
+
+jobs:
+  execute-aegis-tier1:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install Dependencies
+        run: pip install requests google-cloud-bigquery pandas db-dtypes
+      - name: Run AEGIS Federal Backfill
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python aegis_tier1_backfill.py
+        
