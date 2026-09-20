@@ -1,9 +1,9 @@
-name: AEGIS Execution Node (IP)
+name: AEGIS Execution Node (Procurement)
 
 on:
   schedule:
-    # Runs every Wednesday at 12:00 UTC to catch Tuesday USPTO patent grants
-    - cron: '0 12 * * 3'
+    # Runs daily at 23:00 UTC (after standard US government business hours)
+    - cron: '0 23 * * 1-5'
   workflow_dispatch:
 
 jobs:
