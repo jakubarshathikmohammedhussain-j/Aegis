@@ -14,11 +14,11 @@ def main():
     client = bigquery.Client(credentials=credentials, project=creds_dict['project_id'])
     table_id = f"{creds_dict['project_id']}.telemetry_bronze.aegis_procurement"
 
-    # Fetch Tier 1 candidates (Industrials, Tech, Healthcare)
+    # 1. Fetch candidate primes across key spending sectors
     query = f"""
         SELECT DISTINCT ticker, company_name 
         FROM `{creds_dict['project_id']}.telemetry_bronze.tier1_master_index`
-        WHERE gics_sector IN ('Industrials', 'Information Technology', 'Health Care')
+        WHERE gics_sector IN ('Industrials', 'Information Technology', 'Health Care', 'Energy')
     """
     targets = client.query(query).to_dataframe().to_dict(orient="records")
     print(f"[AEGIS] Loaded {len(targets)} candidate prime contractors.")
@@ -33,9 +33,14 @@ def main():
     end_date = datetime.utcnow().strftime('%Y-%m-%d')
     timestamp_iso = datetime.utcnow().isoformat()
 
+    # CRITICAL: Allow BigQuery to dynamically add missing columns
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        schema_update_options=[
+            bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+            bigquery.SchemaUpdateOption.ALLOW_FIELD_RELAXATION
+        ],
         ignore_unknown_values=True,
         autodetect=True
     )
@@ -43,17 +48,14 @@ def main():
     all_awards = []
 
     for target in targets:
-        # Clean name for API search (e.g., "Lockheed Martin Corporation" -> "Lockheed Martin")
         company_clean = " ".join(target['company_name'].split()[:2]).replace(",", "")
         ticker = target['ticker']
         
-        print(f"[AEGIS] Querying contracts for {ticker} ({company_clean})...")
-        
+        print(f"[AEGIS] Fetching contracts for {ticker} ({company_clean})...")
         page = 1
         has_more = True
         
-        # Cap at 20 pages (2,000 recent contracts) per entity to prevent API timeouts
-        while has_more and page <= 20: 
+        while has_more and page <= 15:
             payload = {
                 "filters": {
                     "time_period": [{"start_date": start_date, "end_date": end_date}],
@@ -62,7 +64,7 @@ def main():
                 },
                 "fields": [
                     "Award ID", "Recipient Name", "Award Amount", 
-                    "Description", "Start Date", "Awarding Agency" # Fixed: USASpending uses "Start Date"
+                    "Description", "Start Date", "Awarding Agency"
                 ],
                 "limit": 100,
                 "page": page,
@@ -75,10 +77,9 @@ def main():
                 if resp.status_code == 200:
                     data = resp.json()
                     results = data.get("results", [])
-                    
                     if not results:
                         break
-                        
+
                     for award in results:
                         all_awards.append({
                             "timestamp": timestamp_iso,
@@ -87,37 +88,34 @@ def main():
                             "recipient_name": str(award.get("Recipient Name", "UNKNOWN")),
                             "award_amount": float(award.get("Award Amount") or 0.0),
                             "awarding_agency": str(award.get("Awarding Agency", "UNKNOWN")),
-                            "date_signed": str(award.get("Start Date", "")), # Fixed: Matches BigQuery Schema
+                            "date_signed": str(award.get("Start Date", "")),
                             "award_id": str(award.get("Award ID", "UNKNOWN")),
                             "signal_type": "FEDERAL_CONTRACT_AWARD"
                         })
 
-                    if len(all_awards) >= 3000:
+                    if len(all_awards) >= 2500:
                         client.load_table_from_json(all_awards, table_id, job_config=job_config).result()
-                        print(f"[AEGIS] Committed {len(all_awards)} rows to BigQuery.")
+                        print(f"[AEGIS] Successfully loaded batch of {len(all_awards)} rows.")
                         all_awards = []
 
-                    # API Pagination check
                     if data.get("page_metadata", {}).get("hasNext", False):
                         page += 1
-                        time.sleep(0.5)
+                        time.sleep(0.4)
                     else:
                         has_more = False
                 elif resp.status_code == 429:
-                    print(f"[AEGIS RATE LIMIT] Sleeping 5s for {ticker}...")
                     time.sleep(5)
                 else:
-                    print(f"[AEGIS ERROR] HTTP {resp.status_code} for {ticker}")
                     break
             except Exception as e:
-                print(f"[AEGIS ERROR] Request/BQ load failed for {ticker}: {e}")
+                print(f"[AEGIS] Skipping chunk for {ticker}: {e}")
                 break
-                
+
     if all_awards:
         client.load_table_from_json(all_awards, table_id, job_config=job_config).result()
-        print(f"[AEGIS] Committed final batch of {len(all_awards)} rows.")
+        print(f"[AEGIS] Loaded final {len(all_awards)} rows.")
 
-    print("[AEGIS] Ingestion complete.")
+    print("[AEGIS] 10-Year Backfill complete.")
 
 if __name__ == "__main__":
     main()
